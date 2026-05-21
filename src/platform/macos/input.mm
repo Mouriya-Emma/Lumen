@@ -269,7 +269,6 @@ const KeyCodeMap kKeyCodesMap[] = {
     }
 
     auto macos_input = ((macos_input_t *) input.get());
-    auto event = macos_input->kb_event;
 
     if (key == kVK_Shift || key == kVK_RightShift ||
         key == kVK_Command || key == kVK_RightCommand ||
@@ -297,14 +296,16 @@ const KeyCodeMap kKeyCodesMap[] = {
       }
 
       macos_input->kb_flags = release ? macos_input->kb_flags & ~mask : macos_input->kb_flags | mask;
+      CGEventRef event = CGEventCreateKeyboardEvent(macos_input->source, key, !release);
       CGEventSetType(event, kCGEventFlagsChanged);
       CGEventSetFlags(event, macos_input->kb_flags);
+      CGEventPost(kCGHIDEventTap, event);
+      CFRelease(event);
     } else {
-      CGEventSetIntegerValueField(event, kCGKeyboardEventKeycode, key);
-      CGEventSetType(event, release ? kCGEventKeyUp : kCGEventKeyDown);
+      CGEventRef event = CGEventCreateKeyboardEvent(macos_input->source, key, !release);
+      CGEventPost(kCGHIDEventTap, event);
+      CFRelease(event);
     }
-
-    CGEventPost(kCGHIDEventTap, event);
   }
 
   void unicode(input_t &input, char *utf8, int size) {

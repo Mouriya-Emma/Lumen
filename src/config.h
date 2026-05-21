@@ -141,6 +141,8 @@ namespace config {
     } dd;
 
     std::string virtual_display;  ///< "enabled" or "disabled" — whether to create on-demand virtual displays (macOS only).
+    std::string vd_hidpi;  ///< "enabled" or "disabled" — HiDPI scaling for virtual display mirror mode (macOS only).
+    double vd_hidpi_scale;  ///< HiDPI scale factor (1.5–4.0, default 2.0).
 
     int max_bitrate;  // Maximum bitrate, sets ceiling in kbps for bitrate requested from client
     double minimum_fps_target;  ///< Lowest framerate that will be used when streaming. Range 0-1000, 0 = half of client's requested framerate.

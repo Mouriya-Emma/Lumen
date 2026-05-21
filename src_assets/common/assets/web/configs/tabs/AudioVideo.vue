@@ -90,6 +90,28 @@ const config = ref(props.config)
       :config="config"
     />
 
+    <PlatformLayout :platform="platform">
+      <template #macos>
+        <!-- Virtual Display HiDPI -->
+        <Checkbox class="mb-3"
+                  id="vd_hidpi"
+                  locale-prefix="config"
+                  v-model="config.vd_hidpi"
+                  default="disabled"
+        ></Checkbox>
+
+        <!-- HiDPI Scale Factor -->
+        <div class="mb-3" v-if="['enabled', 'true'].includes(config.vd_hidpi) || config.vd_hidpi === true">
+          <label for="vd_hidpi_scale" class="form-label">{{ $t('config.vd_hidpi_scale') }}</label>
+          <input type="number" class="form-control" id="vd_hidpi_scale"
+                 v-model="config.vd_hidpi_scale"
+                 min="1.5" max="4" step="0.5"
+                 placeholder="2" />
+          <div class="form-text">{{ $t('config.vd_hidpi_scale_desc') }}</div>
+        </div>
+      </template>
+    </PlatformLayout>
+
     <!-- Display Modes -->
     <DisplayModesSettings
         :platform="platform"

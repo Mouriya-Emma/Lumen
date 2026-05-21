@@ -11,6 +11,7 @@
 #include "src/platform/macos/misc.h"
 #include "src/platform/macos/nv12_zero_device.h"
 #import "src/platform/macos/sc_capture.h"
+#include "src/platform/macos/virtual_display.h"
 
 // Avoid conflict between AVFoundation and libavutil both defining AVMediaType
 #define AVMediaType AVMediaType_FFmpeg
@@ -211,6 +212,14 @@ namespace platf {
       if (!signal) {
         BOOST_LOG(error) << "SCCapture failed to start video capture"sv;
         return capture_e::error;
+      }
+
+      if (virtual_display_get_id() != 0) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC),
+                       dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+          BOOST_LOG(info) << "Switching virtual display to mirror mode"sv;
+          virtual_display_enable_mirror();
+        });
       }
 
       // Poll with timeout instead of waiting forever, so the capture thread

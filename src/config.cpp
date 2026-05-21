@@ -505,6 +505,8 @@ namespace config {
     },  // display_device
 
     "enabled"s,  // virtual_display
+    "disabled"s,  // vd_hidpi
+    2.0,  // vd_hidpi_scale
 
     0,  // max_bitrate
     0  // minimum_fps_target (0 = framerate)
@@ -1123,6 +1125,8 @@ namespace config {
     string_f(vars, "adapter_name", video.adapter_name);
     string_f(vars, "output_name", video.output_name);
     string_f(vars, "virtual_display", video.virtual_display);
+    string_f(vars, "vd_hidpi", video.vd_hidpi);
+    double_between_f(vars, "vd_hidpi_scale", video.vd_hidpi_scale, {1.5, 4.0});
 
     generic_f(vars, "dd_configuration_option", video.dd.configuration_option, dd::config_option_from_view);
     generic_f(vars, "dd_resolution_option", video.dd.resolution_option, dd::resolution_option_from_view);

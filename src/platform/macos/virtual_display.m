@@ -40,7 +40,7 @@ static NSString *helperPath(void) {
   return [dir stringByAppendingPathComponent:@"vd_helper"];
 }
 
-uint32_t virtual_display_create(int width, int height, int fps) {
+uint32_t virtual_display_create(int width, int height, int fps, double hidpi_scale) {
   pthread_mutex_lock(&vd_mutex);
 
   // Destroy existing display first
@@ -67,7 +67,7 @@ uint32_t virtual_display_create(int width, int height, int fps) {
     return 0;
   }
 
-  NSLog(@"[Sunshine] Spawning vd_helper: %@ %d %d %d", helper, width, height, fps);
+  NSLog(@"[Sunshine] Spawning vd_helper: %@ %d %d %d scale=%.2f", helper, width, height, fps, hidpi_scale);
 
   // Set up pipe for reading displayID from child's stdout
   int pipefd[2];
@@ -78,16 +78,18 @@ uint32_t virtual_display_create(int width, int height, int fps) {
   }
 
   // Build argv
-  char widthStr[16], heightStr[16], fpsStr[16];
+  char widthStr[16], heightStr[16], fpsStr[16], scaleStr[16];
   snprintf(widthStr, sizeof(widthStr), "%d", width);
   snprintf(heightStr, sizeof(heightStr), "%d", height);
   snprintf(fpsStr, sizeof(fpsStr), "%d", fps);
+  snprintf(scaleStr, sizeof(scaleStr), "%.2f", hidpi_scale);
 
   const char *argv[] = {
     [helper fileSystemRepresentation],
     widthStr,
     heightStr,
     fpsStr,
+    scaleStr,
     NULL
   };
 
@@ -199,4 +201,13 @@ uint32_t virtual_display_get_id(void) {
   uint32_t result = vd_display_id;
   pthread_mutex_unlock(&vd_mutex);
   return result;
+}
+
+void virtual_display_enable_mirror(void) {
+  pthread_mutex_lock(&vd_mutex);
+  if (vd_helper_pid > 0) {
+    NSLog(@"[Sunshine] Sending SIGUSR1 to vd_helper (pid=%d) to enable mirror mode", vd_helper_pid);
+    kill(vd_helper_pid, SIGUSR1);
+  }
+  pthread_mutex_unlock(&vd_mutex);
 }

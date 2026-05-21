@@ -17,7 +17,7 @@ extern "C" {
  * @param fps Refresh rate in Hz.
  * @return The CGDirectDisplayID of the created display, or 0 on failure.
  */
-uint32_t virtual_display_create(int width, int height, int fps);
+uint32_t virtual_display_create(int width, int height, int fps, double hidpi_scale);
 
 /**
  * @brief Destroy the currently active virtual display.
@@ -29,6 +29,11 @@ void virtual_display_destroy(void);
  * @return The CGDirectDisplayID, or 0 if no virtual display is active.
  */
 uint32_t virtual_display_get_id(void);
+
+/**
+ * @brief Signal vd_helper to switch the virtual display into mirror mode.
+ */
+void virtual_display_enable_mirror(void);
 
 #ifdef __cplusplus
 }

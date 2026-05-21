@@ -841,7 +841,7 @@ namespace platf {
    * @param fps Refresh rate in Hz.
    * @return The display ID of the created display, or 0 on failure.
    */
-  std::uint32_t virtual_display_create(int width, int height, int fps);
+  std::uint32_t virtual_display_create(int width, int height, int fps, double hidpi_scale);
 
   /**
    * @brief Destroy the currently active virtual display.

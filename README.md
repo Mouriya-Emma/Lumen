@@ -23,6 +23,22 @@ Upstream Sunshine has significant issues on macOS:
 
 ---
 
+## Fork Changes (Mouriya-Emma)
+
+Changes on top of [trollzem/Lumen](https://github.com/trollzem/Lumen):
+
+- **Virtual display mirror mode** — After streaming capture starts, the virtual display automatically switches to mirror mode (3-second delay), so the physical display mirrors the streamed content. The capture stream survives the switch since it is already established.
+
+- **Mirror mode resolution follows client** — After switching to mirror mode, the main display resolution is changed to match the client's requested resolution.
+
+- **Configurable HiDPI scaling** — Web UI toggle (`vd_hidpi`) and scale factor (`vd_hidpi_scale`, 1.5×–4×). When enabled, the client resolution is treated as the pixel resolution and the logical resolution is calculated by dividing by the scale factor (e.g., client 2560×1440 at scale 2× → logical 1280×720 HiDPI). Disabled by default.
+
+- **Keyboard input fix** — Replaced reused `CGEventCreate` with per-event `CGEventCreateKeyboardEvent` calls, fixing keyboard input not being delivered to the foreground application.
+
+- **launchd service** — Ships a LaunchAgent plist (`dev.lizardbyte.lumen`) and wrapper script for proper service management (auto-start on login, auto-restart on crash). Includes pre-launch codesigning when AMFI is disabled.
+
+---
+
 ## Features
 
 - **Zero-config system audio** — ScreenCaptureKit captures all desktop audio natively. No BlackHole, no Soundflower, no virtual audio devices to install or configure.

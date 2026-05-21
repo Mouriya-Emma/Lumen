@@ -63,12 +63,106 @@ static CGVirtualDisplay *keepAlive = nil;
 static CGVirtualDisplayDescriptor *keepDesc = nil;
 
 static volatile sig_atomic_t shouldExit = 0;
+static volatile sig_atomic_t shouldMirror = 0;
+static CGDirectDisplayID g_virtualDisplayID = 0;
+static int g_clientWidth = 0;
+static int g_clientHeight = 0;
+static int g_clientFps = 0;
+static double g_hidpiScale = 0.0;  // 0 = disabled, >0 = scale factor
 
 static void handle_signal(int sig) {
+  if (sig == SIGUSR1) {
+    shouldMirror = 1;
+    dispatch_async(dispatch_get_main_queue(), ^{
+      CFRunLoopStop(CFRunLoopGetMain());
+    });
+    return;
+  }
   shouldExit = 1;
   dispatch_async(dispatch_get_main_queue(), ^{
     CFRunLoopStop(CFRunLoopGetMain());
   });
+}
+
+static void setDisplayResolution(CGDirectDisplayID displayID, int width, int height, int fps) {
+  NSDictionary *opts = @{(NSString *)kCGDisplayShowDuplicateLowResolutionModes: @YES};
+  CFArrayRef allModes = CGDisplayCopyAllDisplayModes(displayID, (CFDictionaryRef)opts);
+  if (!allModes) {
+    fprintf(stderr, "[vd_helper] Failed to get display modes for %u\n", displayID);
+    return;
+  }
+
+  BOOL wantHiDPI = (g_hidpiScale > 0);
+  int logicalW = wantHiDPI ? (int)(width / g_hidpiScale) : width;
+  int logicalH = wantHiDPI ? (int)(height / g_hidpiScale) : height;
+
+  fprintf(stderr, "[vd_helper] Looking for mode: pixel %dx%d, logical %dx%d (scale=%.2f)\n",
+          width, height, logicalW, logicalH, g_hidpiScale);
+
+  CGDisplayModeRef hidpiFpsMode = NULL;
+  CGDisplayModeRef hidpiMode = NULL;
+  CGDisplayModeRef fallbackFpsMode = NULL;
+  CGDisplayModeRef fallbackMode = NULL;
+
+  CFIndex modeCount = CFArrayGetCount(allModes);
+  for (CFIndex i = 0; i < modeCount; i++) {
+    CGDisplayModeRef m = (CGDisplayModeRef)CFArrayGetValueAtIndex(allModes, i);
+    size_t lw = CGDisplayModeGetWidth(m);
+    size_t lh = CGDisplayModeGetHeight(m);
+    size_t pw = CGDisplayModeGetPixelWidth(m);
+    size_t ph = CGDisplayModeGetPixelHeight(m);
+    double rate = CGDisplayModeGetRefreshRate(m);
+    BOOL fpsMatch = (fps > 0 && rate > 0 && (int)rate == fps);
+
+    if (wantHiDPI && (int)lw == logicalW && (int)lh == logicalH && pw > lw) {
+      if (fpsMatch && !hidpiFpsMode) hidpiFpsMode = m;
+      if (!hidpiMode) hidpiMode = m;
+    }
+    if ((int)lw == width && (int)lh == height) {
+      if (fpsMatch && !fallbackFpsMode) fallbackFpsMode = m;
+      if (!fallbackMode) fallbackMode = m;
+    }
+  }
+
+  CGDisplayModeRef bestMode = hidpiFpsMode ?: hidpiMode ?: fallbackFpsMode ?: fallbackMode;
+
+  if (bestMode) {
+    size_t lw = CGDisplayModeGetWidth(bestMode);
+    size_t lh = CGDisplayModeGetHeight(bestMode);
+    size_t pw = CGDisplayModeGetPixelWidth(bestMode);
+    size_t ph = CGDisplayModeGetPixelHeight(bestMode);
+    double rate = CGDisplayModeGetRefreshRate(bestMode);
+    BOOL isHiDPI = (pw > lw);
+    CGError err = CGDisplaySetDisplayMode(displayID, bestMode, NULL);
+    fprintf(stderr, "[vd_helper] Set display %u to logical %zux%zu pixel %zux%zu @%.0fHz HiDPI=%d: %d\n",
+            displayID, lw, lh, pw, ph, rate, isHiDPI, err);
+  } else {
+    fprintf(stderr, "[vd_helper] No matching mode %dx%d@%dHz for display %u\n", width, height, fps, displayID);
+  }
+  CFRelease(allModes);
+}
+
+static void switchToMirrorMode(CGDirectDisplayID virtualID) {
+  CGDirectDisplayID mainDisplay = CGMainDisplayID();
+  if (mainDisplay == virtualID) {
+    fprintf(stderr, "[vd_helper] Virtual display is main display, skipping mirror\n");
+    return;
+  }
+  fprintf(stderr, "[vd_helper] Switching display %u to mirror main display %u\n", virtualID, mainDisplay);
+  CGDisplayConfigRef config = NULL;
+  CGBeginDisplayConfiguration(&config);
+  if (config) {
+    CGConfigureDisplayMirrorOfDisplay(config, virtualID, mainDisplay);
+    CGError err = CGCompleteDisplayConfiguration(config, kCGConfigureForAppOnly);
+    fprintf(stderr, "[vd_helper] Mirror configuration result: %d\n", err);
+  }
+
+  if (g_clientWidth > 0 && g_clientHeight > 0) {
+    usleep(500000);
+    fprintf(stderr, "[vd_helper] Setting main display %u resolution to %dx%d@%dHz (client)\n",
+            mainDisplay, g_clientWidth, g_clientHeight, g_clientFps);
+    setDisplayResolution(mainDisplay, g_clientWidth, g_clientHeight, g_clientFps);
+  }
 }
 
 static BOOL checkDisplayInList(uint32_t targetID, uint32_t *outCount) {
@@ -152,7 +246,7 @@ static void forceExtendMode(CGDirectDisplayID virtualID) {
 
 int main(int argc, const char *argv[]) {
   @autoreleasepool {
-    if (argc != 4) {
+    if (argc < 4 || argc > 5) {
       fprintf(stdout, "0\n");
       fflush(stdout);
       return 1;
@@ -161,12 +255,19 @@ int main(int argc, const char *argv[]) {
     int width = atoi(argv[1]);
     int height = atoi(argv[2]);
     int fps = atoi(argv[3]);
+    double hidpiScale = (argc == 5) ? atof(argv[4]) : 0.0;
 
     if (width <= 0 || height <= 0 || fps <= 0) {
       fprintf(stdout, "0\n");
       fflush(stdout);
       return 1;
     }
+
+    g_clientWidth = width;
+    g_clientHeight = height;
+    g_clientFps = fps;
+    g_hidpiScale = hidpiScale;
+    fprintf(stderr, "[vd_helper] HiDPI scale: %.2f (%s)\n", g_hidpiScale, g_hidpiScale > 0 ? "enabled" : "disabled");
 
     // Runtime availability check
     if (!NSClassFromString(@"CGVirtualDisplay")) {
@@ -184,6 +285,7 @@ int main(int argc, const char *argv[]) {
     signal(SIGTERM, handle_signal);
     signal(SIGINT, handle_signal);
     signal(SIGHUP, handle_signal);
+    signal(SIGUSR1, handle_signal);
 
     // Create display directly on main thread
     CGVirtualDisplayDescriptor *desc = [[CGVirtualDisplayDescriptor alloc] init];
@@ -359,12 +461,18 @@ int main(int argc, const char *argv[]) {
               CGDisplayMirrorsDisplay(resultID));
     }
 
+    g_virtualDisplayID = resultID;
+
     fprintf(stdout, "%u\n", resultID);
     fflush(stdout);
 
-    // Keep alive via CFRunLoop
+    // Keep alive via CFRunLoop; handle SIGUSR1 for mirror mode switch
     while (!shouldExit) {
       CFRunLoopRunInMode(kCFRunLoopDefaultMode, 1.0, false);
+      if (shouldMirror && !shouldExit) {
+        shouldMirror = 0;
+        switchToMirrorMode(g_virtualDisplayID);
+      }
     }
 
     fprintf(stderr, "[vd_helper] Shutting down, releasing display %u\n", resultID);
