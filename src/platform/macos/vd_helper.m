@@ -16,8 +16,25 @@
 #import <Foundation/Foundation.h>
 #import <AppKit/AppKit.h>
 #import <CoreGraphics/CoreGraphics.h>
+#include <float.h>
+#include <math.h>
 #include <signal.h>
 #include <unistd.h>
+
+// Standard 16:9 and 16:10 logical resolution rungs.
+// Used to populate settings.modes so the virtual display advertises a rich
+// ladder of HiDPI-eligible logical resolutions; setDisplayResolution() then
+// picks the rung closest to (clientWidth/scale, clientHeight/scale).
+typedef struct { unsigned int w, h; } LumenResMode;
+static const LumenResMode kStandardLogicalModes[] = {
+  // 16:9
+  {640, 360}, {854, 480}, {960, 540}, {1024, 576},
+  {1280, 720}, {1366, 768}, {1600, 900}, {1920, 1080},
+  {2560, 1440}, {2880, 1620}, {3200, 1800}, {3840, 2160},
+  // 16:10
+  {1024, 640}, {1280, 800}, {1440, 900}, {1680, 1050},
+  {1920, 1200}, {2560, 1600}, {2880, 1800},
+};
 
 // Private CGVirtualDisplay API interface declarations (macOS 14+)
 @interface CGVirtualDisplayMode : NSObject
@@ -93,16 +110,22 @@ static void setDisplayResolution(CGDirectDisplayID displayID, int width, int hei
   }
 
   BOOL wantHiDPI = (g_hidpiScale > 0);
-  int logicalW = wantHiDPI ? (int)(width / g_hidpiScale) : width;
-  int logicalH = wantHiDPI ? (int)(height / g_hidpiScale) : height;
+  double targetLW = wantHiDPI ? (double)width / g_hidpiScale : (double)width;
+  double targetLH = wantHiDPI ? (double)height / g_hidpiScale : (double)height;
 
-  fprintf(stderr, "[vd_helper] Looking for mode: pixel %dx%d, logical %dx%d (scale=%.2f)\n",
-          width, height, logicalW, logicalH, g_hidpiScale);
+  fprintf(stderr, "[vd_helper] Looking for mode on %u: pixel %dx%d, target logical %.0fx%.0f (scale=%.2f)\n",
+          displayID, width, height, targetLW, targetLH, g_hidpiScale);
 
-  CGDisplayModeRef hidpiFpsMode = NULL;
-  CGDisplayModeRef hidpiMode = NULL;
-  CGDisplayModeRef fallbackFpsMode = NULL;
-  CGDisplayModeRef fallbackMode = NULL;
+  // SCStream output is sized independently (sc_capture.m:181-184), so display
+  // pixel may exceed client width — SCStream downscales. We pick the HiDPI
+  // mode (pw > lw) whose logical resolution is closest to target; fall back
+  // to the exact native 1x mode (pw == lw == width) if HiDPI not wanted/found.
+  CGDisplayModeRef bestHidpiFps = NULL;
+  CGDisplayModeRef bestHidpi = NULL;
+  CGDisplayModeRef bestNativeFps = NULL;
+  CGDisplayModeRef bestNative = NULL;
+  double bestHidpiFpsDist = DBL_MAX;
+  double bestHidpiDist = DBL_MAX;
 
   CFIndex modeCount = CFArrayGetCount(allModes);
   for (CFIndex i = 0; i < modeCount; i++) {
@@ -114,17 +137,17 @@ static void setDisplayResolution(CGDirectDisplayID displayID, int width, int hei
     double rate = CGDisplayModeGetRefreshRate(m);
     BOOL fpsMatch = (fps > 0 && rate > 0 && (int)rate == fps);
 
-    if (wantHiDPI && (int)lw == logicalW && (int)lh == logicalH && pw > lw) {
-      if (fpsMatch && !hidpiFpsMode) hidpiFpsMode = m;
-      if (!hidpiMode) hidpiMode = m;
-    }
-    if ((int)lw == width && (int)lh == height) {
-      if (fpsMatch && !fallbackFpsMode) fallbackFpsMode = m;
-      if (!fallbackMode) fallbackMode = m;
+    if (wantHiDPI && pw > lw) {
+      double dist = fabs((double)lw - targetLW) / targetLW + fabs((double)lh - targetLH) / targetLH;
+      if (fpsMatch && dist < bestHidpiFpsDist) { bestHidpiFps = m; bestHidpiFpsDist = dist; }
+      if (dist < bestHidpiDist) { bestHidpi = m; bestHidpiDist = dist; }
+    } else if ((int)lw == width && (int)lh == height && pw == lw) {
+      if (fpsMatch && !bestNativeFps) bestNativeFps = m;
+      if (!bestNative) bestNative = m;
     }
   }
 
-  CGDisplayModeRef bestMode = hidpiFpsMode ?: hidpiMode ?: fallbackFpsMode ?: fallbackMode;
+  CGDisplayModeRef bestMode = bestHidpiFps ?: bestHidpi ?: bestNativeFps ?: bestNative;
 
   if (bestMode) {
     size_t lw = CGDisplayModeGetWidth(bestMode);
@@ -137,31 +160,45 @@ static void setDisplayResolution(CGDirectDisplayID displayID, int width, int hei
     fprintf(stderr, "[vd_helper] Set display %u to logical %zux%zu pixel %zux%zu @%.0fHz HiDPI=%d: %d\n",
             displayID, lw, lh, pw, ph, rate, isHiDPI, err);
   } else {
-    fprintf(stderr, "[vd_helper] No matching mode %dx%d@%dHz for display %u\n", width, height, fps, displayID);
+    fprintf(stderr, "[vd_helper] No matching mode for display %u (target logical %.0fx%.0f, native %dx%d@%dHz)\n",
+            displayID, targetLW, targetLH, width, height, fps);
   }
   CFRelease(allModes);
 }
 
 static void switchToMirrorMode(CGDirectDisplayID virtualID) {
   CGDirectDisplayID mainDisplay = CGMainDisplayID();
-  if (mainDisplay == virtualID) {
-    fprintf(stderr, "[vd_helper] Virtual display is main display, skipping mirror\n");
-    return;
-  }
-  fprintf(stderr, "[vd_helper] Switching display %u to mirror main display %u\n", virtualID, mainDisplay);
-  CGDisplayConfigRef config = NULL;
-  CGBeginDisplayConfiguration(&config);
-  if (config) {
-    CGConfigureDisplayMirrorOfDisplay(config, virtualID, mainDisplay);
-    CGError err = CGCompleteDisplayConfiguration(config, kCGConfigureForAppOnly);
-    fprintf(stderr, "[vd_helper] Mirror configuration result: %d\n", err);
+
+  // Step 1: if there's a real physical main display, mirror onto the virtual one
+  // so the client sees what the user sees. With no physical main, skip this —
+  // the virtual display is its own canvas.
+  if (mainDisplay != virtualID) {
+    fprintf(stderr, "[vd_helper] Switching display %u to mirror main display %u\n", virtualID, mainDisplay);
+    CGDisplayConfigRef config = NULL;
+    CGBeginDisplayConfiguration(&config);
+    if (config) {
+      CGConfigureDisplayMirrorOfDisplay(config, virtualID, mainDisplay);
+      CGError err = CGCompleteDisplayConfiguration(config, kCGConfigureForAppOnly);
+      fprintf(stderr, "[vd_helper] Mirror configuration result: %d\n", err);
+    }
+    usleep(500000);
+  } else {
+    fprintf(stderr, "[vd_helper] Virtual display is main; no mirror needed\n");
   }
 
+  // Step 2: apply logical resolution to the mirror set virtualID lives in.
+  // A mirror set shares one logical canvas; CGDisplaySetDisplayMode requires
+  // operating on the set's master, never on a slave (the slave call returns
+  // kCGErrorIllegalArgument = 1001). CGDisplayMirrorsDisplay returns the
+  // master when virtualID is a slave, or 0 when virtualID is standalone /
+  // is itself the master. Resolving to the master keeps a single call site
+  // that works for both mirror and no-mirror states.
   if (g_clientWidth > 0 && g_clientHeight > 0) {
-    usleep(500000);
-    fprintf(stderr, "[vd_helper] Setting main display %u resolution to %dx%d@%dHz (client)\n",
-            mainDisplay, g_clientWidth, g_clientHeight, g_clientFps);
-    setDisplayResolution(mainDisplay, g_clientWidth, g_clientHeight, g_clientFps);
+    CGDirectDisplayID master = CGDisplayMirrorsDisplay(virtualID);
+    if (master == kCGNullDirectDisplay) master = virtualID;
+    fprintf(stderr, "[vd_helper] Applying logical resolution to display %u (mirror master of virtual %u)\n",
+            master, virtualID);
+    setDisplayResolution(master, g_clientWidth, g_clientHeight, g_clientFps);
   }
 }
 
@@ -293,8 +330,12 @@ int main(int argc, const char *argv[]) {
     desc.vendorID = 0xF0F0;
     desc.productID = 0x5678;
     desc.serialNum = arc4random();
-    desc.maxPixelsWide = (unsigned int)width;
-    desc.maxPixelsHigh = (unsigned int)height;
+    // maxPixels caps the largest backing buffer macOS will allocate for this vd.
+    // It must be ≥ 2 × any declared logical for that logical to get a HiDPI
+    // (pixel = 2 × logical) derived variant. Setting it to 2 × client native
+    // lets every declared rung at or below native get its HiDPI backing.
+    desc.maxPixelsWide = (unsigned int)(width * 2);
+    desc.maxPixelsHigh = (unsigned int)(height * 2);
     // Fixed 27" monitor physical size — do NOT scale linearly with resolution.
     // WindowServer rejects displays with unreasonably large physical dimensions.
     desc.sizeInMillimeters = CGSizeMake(597, 336);
@@ -317,20 +358,25 @@ int main(int argc, const char *argv[]) {
       return 1;
     }
 
-    // Build mode list with native + half-resolution mode.
-    // With hiDPI=1, macOS selects the native mode as the retina backing store
-    // and the half-res mode as the logical resolution (2x scaling).
-    // Without this, macOS only gives us half the requested pixel resolution.
-    CGVirtualDisplayMode *halfMode = [[CGVirtualDisplayMode alloc] initWithWidth:(unsigned int)(width / 2)
-                                                                         height:(unsigned int)(height / 2)
-                                                                    refreshRate:(double)fps];
+    // Declare a ladder of standard 16:9 + 16:10 logical resolutions (≤ native).
+    // With hiDPI=1, macOS pairs each declared logical with a retina backing variant
+    // (pixel = native). setDisplayResolution() later picks whichever rung is closest
+    // to (width/scale, height/scale), so user-facing scale settings (1.5x / 2x / 3x …)
+    // snap to a real rung rather than requiring an exact integer divisor.
     CGVirtualDisplaySettings *settings = [[CGVirtualDisplaySettings alloc] init];
     settings.hiDPI = 1;
-    if (halfMode) {
-      settings.modes = @[nativeMode, halfMode];
-    } else {
-      settings.modes = @[nativeMode];
+    NSMutableArray *modeList = [NSMutableArray arrayWithObject:nativeMode];
+    size_t kModeCount = sizeof(kStandardLogicalModes) / sizeof(kStandardLogicalModes[0]);
+    for (size_t i = 0; i < kModeCount; ++i) {
+      unsigned int lw = kStandardLogicalModes[i].w;
+      unsigned int lh = kStandardLogicalModes[i].h;
+      if (lw >= (unsigned int)width || lh >= (unsigned int)height) continue;
+      CGVirtualDisplayMode *m = [[CGVirtualDisplayMode alloc] initWithWidth:lw
+                                                                    height:lh
+                                                               refreshRate:(double)fps];
+      if (m) [modeList addObject:m];
     }
+    settings.modes = modeList;
 
     CGVirtualDisplay *display = [[CGVirtualDisplay alloc] initWithDescriptor:desc];
     if (!display) {
@@ -381,6 +427,27 @@ int main(int argc, const char *argv[]) {
 
     // Wait for WindowServer to process the display
     usleep(500000); // 500ms
+
+    // Diagnostic: dump every mode WindowServer ended up exposing for this vd.
+    // Tells us which of the declared logical rungs actually got a HiDPI backing
+    // variant (pw > lw) vs. plain 1x (pw == lw). Used to tune the rung ladder.
+    {
+      NSDictionary *dopts = @{(NSString *)kCGDisplayShowDuplicateLowResolutionModes: @YES};
+      CFArrayRef dumpModes = CGDisplayCopyAllDisplayModes(resultID, (CFDictionaryRef)dopts);
+      if (dumpModes) {
+        CFIndex n = CFArrayGetCount(dumpModes);
+        fprintf(stderr, "[vd_helper] Display %u exposes %ld modes:\n", resultID, (long)n);
+        for (CFIndex i = 0; i < n; i++) {
+          CGDisplayModeRef m = (CGDisplayModeRef)CFArrayGetValueAtIndex(dumpModes, i);
+          size_t lw = CGDisplayModeGetWidth(m), lh = CGDisplayModeGetHeight(m);
+          size_t pw = CGDisplayModeGetPixelWidth(m), ph = CGDisplayModeGetPixelHeight(m);
+          fprintf(stderr, "[vd_helper]   logical %zux%zu pixel %zux%zu @%.0fHz%s\n",
+                  lw, lh, pw, ph, CGDisplayModeGetRefreshRate(m),
+                  (pw > lw) ? " (HiDPI)" : "");
+        }
+        CFRelease(dumpModes);
+      }
+    }
 
     // Step 2: Force extend mode (un-mirror) if needed
     if (CGDisplayIsInMirrorSet(resultID) || CGDisplayMirrorsDisplay(resultID) != 0) {
