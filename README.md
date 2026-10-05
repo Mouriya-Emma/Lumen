@@ -37,6 +37,8 @@ Changes on top of [trollzem/Lumen](https://github.com/trollzem/Lumen):
 
 - **launchd service** — Ships a LaunchAgent plist (`dev.lizardbyte.lumen`) and wrapper script for proper service management (auto-start on login, auto-restart on crash). Includes pre-launch codesigning when AMFI is disabled.
 
+- **Reproducible dependency resolution** — FFmpeg prebuilts are pinned to the build-deps release matching the vendored snapshot, and the vendored Simple-Web-Server no longer overrides `OPENSSL_ROOT_DIR` (Homebrew's `openssl` now points to OpenSSL 4, which mixed OpenSSL 3 headers with OpenSSL 4 libraries).
+
 ---
 
 ## Features
@@ -428,11 +430,13 @@ Building upstream Sunshine on modern macOS (15+) with Command Line Tools fails d
 
 2. **Fix:** CMake flags `-nostdinc++ -cxx-isystem $SDK_PATH/usr/include/c++/v1` tell the compiler to ignore the empty default path and use the SDK headers instead.
 
-3. **OpenSSL headers:** Homebrew installs OpenSSL to a non-standard location (`/opt/homebrew/opt/openssl@3/`). The upstream CMake configuration doesn't add this to the include path on macOS, requiring explicit `-I` flags in both `CMAKE_CXX_FLAGS` and `CMAKE_C_FLAGS`.
+3. **OpenSSL headers:** Homebrew installs OpenSSL to a non-standard location (`/opt/homebrew/opt/openssl@3/`). The upstream CMake configuration doesn't add this to the include path on macOS, requiring explicit `-I` flags in both `CMAKE_CXX_FLAGS` and `CMAKE_C_FLAGS`. The vendored Simple-Web-Server only falls back to `/opt/homebrew/opt/openssl` when `OPENSSL_ROOT_DIR` is not set, so headers and libraries both come from `openssl@3`.
 
 4. **Opus include path:** The code uses `#include <opus/opus_multistream.h>` but the Opus pkg-config reports the directory containing the headers directly (without the `opus/` subdirectory). Fixed in `common.cmake` by using the parent directory.
 
 5. **`CMAKE_OSX_SYSROOT`:** Must be set explicitly to the current SDK path to avoid picking up a stale or mismatched SDK.
+
+6. **FFmpeg prebuilts:** `third-party/build-deps` is vendored as plain files, so its release tag cannot be read from git. `cmake/dependencies/ffmpeg.cmake` pins the matching build-deps release; `releases/latest` ships a different static library set that fails to link.
 
 The install script detects all of these automatically and configures the build correctly.
 
