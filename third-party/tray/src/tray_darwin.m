@@ -93,12 +93,24 @@ int tray_loop(int blocking) {
   return 0;
 }
 
-void tray_update(struct tray *tray) {
+static void tray_update_internal(struct tray *tray) {
   NSImage *image = [[NSImage alloc] initWithContentsOfFile:[NSString stringWithUTF8String:tray->icon]];
-  NSSize size = NSMakeSize(16, 16);
   [image setSize:NSMakeSize(16, 16)];
   statusItem.button.image = image;
   [statusItem setMenu:_tray_menu(tray->menu)];
+}
+
+void tray_update(struct tray *tray) {
+  // AppKit must only be touched on the main thread, where tray_init() and tray_loop() run;
+  // macOS 27 traps on status item updates from other threads. Block until the update has run
+  // so the strings referenced by the tray struct stay valid, mirroring tray_linux.c.
+  if ([NSThread isMainThread]) {
+    tray_update_internal(tray);
+  } else {
+    dispatch_sync(dispatch_get_main_queue(), ^{
+      tray_update_internal(tray);
+    });
+  }
 }
 
 void tray_exit(void) {

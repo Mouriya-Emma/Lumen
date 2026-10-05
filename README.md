@@ -37,6 +37,8 @@ Changes on top of [trollzem/Lumen](https://github.com/trollzem/Lumen):
 
 - **launchd service** — Ships a LaunchAgent plist (`dev.lizardbyte.lumen`) and wrapper script for proper service management (auto-start on login, auto-restart on crash). Includes pre-launch codesigning when AMFI is disabled.
 
+- **macOS 27 pairing crash fix** — Tray updates triggered from network threads (e.g. the pairing request) are dispatched to the main thread. macOS 27 traps when a status item is modified off the main thread, which killed the process mid-pairing and made Moonlight report a wrong PIN.
+
 - **Reproducible dependency resolution** — FFmpeg prebuilts are pinned to the build-deps release matching the vendored snapshot, and the vendored Simple-Web-Server no longer overrides `OPENSSL_ROOT_DIR` (Homebrew's `openssl` now points to OpenSSL 4, which mixed OpenSSL 3 headers with OpenSSL 4 libraries).
 
 ---
