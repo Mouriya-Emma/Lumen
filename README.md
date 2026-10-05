@@ -39,6 +39,8 @@ Changes on top of [trollzem/Lumen](https://github.com/trollzem/Lumen):
 
 - **macOS 27 pairing crash fix** — Tray updates triggered from network threads (e.g. the pairing request) are dispatched to the main thread. macOS 27 traps when a status item is modified off the main thread, which killed the process mid-pairing and made Moonlight report a wrong PIN.
 
+- **Stable local code-signing identity** — `install.sh` signs `sunshine` with a self-signed `Lumen Local Signing` identity (created in the login keychain on first install) and the fixed identifier `dev.lizardbyte.lumen`. macOS binds Screen Recording and Accessibility grants to the signature; with ad-hoc signing they were lost on every rebuild, with the stable identity they are granted once.
+
 - **Reproducible dependency resolution** — FFmpeg prebuilts are pinned to the build-deps release matching the vendored snapshot, and the vendored Simple-Web-Server no longer overrides `OPENSSL_ROOT_DIR` (Homebrew's `openssl` now points to OpenSSL 4, which mixed OpenSSL 3 headers with OpenSSL 4 libraries).
 
 ---
@@ -91,13 +93,15 @@ The install script handles everything:
 4. Detects the correct macOS SDK path and C++ header location
 5. Configures cmake with all necessary flags (see [macOS Build Fixes](#macos-build-fixes) for why this is needed)
 6. Builds from source with all CPU cores
-7. Installs the binary, virtual display helper, and assets to `~/.local/share/lumen/`
+7. Installs the binary, virtual display helper, and assets to `~/.local/share/lumen/`, and signs `sunshine` with the local `Lumen Local Signing` identity (created in your login keychain if missing)
 8. Sets up default configuration in `~/.config/sunshine/`
 9. Creates a `lumen` launch command in `~/.local/bin/`
 
 After installation, grant these macOS permissions when prompted:
 - **Screen Recording** (System Settings > Privacy & Security > Screen Recording)
 - **Accessibility** (System Settings > Privacy & Security > Accessibility)
+
+The grants are tied to the `Lumen Local Signing` identity, so rebuilding and reinstalling keeps them.
 
 ---
 
@@ -187,7 +191,7 @@ Virtual gamepad support requires a one-time security configuration because it us
 
 macOS restricts the creation of virtual HID devices to prevent malicious software from injecting fake input. Lumen creates a virtual gamepad that appears as a real USB controller to the system — this requires the `com.apple.developer.hid.virtual.device` entitlement, which Apple only allows with AMFI (Apple Mobile File Integrity) disabled.
 
-**SIP (System Integrity Protection) does NOT need to be disabled** — only AMFI. This is a less invasive change that specifically allows ad-hoc signed binaries to use restricted entitlements.
+**SIP (System Integrity Protection) does NOT need to be disabled** — only AMFI. This is a less invasive change that specifically allows locally signed (ad-hoc or self-signed) binaries to use restricted entitlements.
 
 ### Steps
 
@@ -199,7 +203,7 @@ macOS restricts the creation of virtual HID devices to prevent malicious softwar
 
 3. **Open Terminal** from the **Utilities** menu in Recovery Mode
 
-4. **Disable AMFI** (allows restricted entitlements on ad-hoc signed binaries):
+4. **Disable AMFI** (allows restricted entitlements on locally signed binaries):
    ```bash
    nvram boot-args="amfi_get_out_of_my_way=1"
    ```
@@ -208,7 +212,7 @@ macOS restricts the creation of virtual HID devices to prevent malicious softwar
 
 6. **Sign the Lumen binaries** with the HID entitlement:
    ```bash
-   codesign --sign - --entitlements ~/.local/share/lumen/hid_entitlements.plist --force ~/.local/share/lumen/sunshine
+   codesign --sign "Lumen Local Signing" --identifier dev.lizardbyte.lumen --entitlements ~/.local/share/lumen/hid_entitlements.plist --force ~/.local/share/lumen/sunshine
    codesign --sign - --force ~/.local/share/lumen/vd_helper
    ```
 
@@ -292,7 +296,7 @@ mDNS/DNS-SD is used for automatic discovery on the local network — Moonlight w
 
 | Problem | Solution |
 |---------|----------|
-| "No screen capture permission" | Grant Screen Recording in System Settings > Privacy & Security |
+| "No screen capture permission" | Grant Screen Recording in System Settings > Privacy & Security, then restart Lumen. If it persists, remove the existing `sunshine` entry, add `~/.local/share/lumen/sunshine` again, and check `codesign -dv ~/.local/share/lumen/sunshine` reports `Identifier=dev.lizardbyte.lumen` |
 | No audio in stream | Ensure `audio_sink = system` in sunshine.conf and Screen Recording permission is granted |
 | Black screen / no video | Check that the virtual display was created (look for "Created virtual display" in logs) |
 | Gamepad not detected | Ensure AMFI is disabled and binary is signed (see [Gamepad Setup](#gamepad-setup-optional)) |
