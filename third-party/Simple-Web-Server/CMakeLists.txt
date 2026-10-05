@@ -65,7 +65,7 @@ if(WIN32)
     target_link_libraries(simple-web-server INTERFACE ws2_32 wsock32)
 endif()
 
-if(APPLE)
+if(APPLE AND NOT OPENSSL_ROOT_DIR)
     if(EXISTS /usr/local/opt/openssl)
         set(OPENSSL_ROOT_DIR /usr/local/opt/openssl)
     elseif(EXISTS /opt/homebrew/opt/openssl)
