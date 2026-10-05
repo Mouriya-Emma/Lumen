@@ -178,6 +178,30 @@ for helper in vd_helper get_display_origin; do
     fi
 done
 
+# Sign sunshine with a stable local identity. macOS binds Screen Recording and
+# Accessibility grants to the code signature; an ad-hoc signature changes with
+# every build, so each rebuild would otherwise need the permissions granted again.
+SIGN_IDENTITY="Lumen Local Signing"
+if ! security find-certificate -c "$SIGN_IDENTITY" >/dev/null 2>&1; then
+    info "Creating local code-signing identity '$SIGN_IDENTITY'..."
+    SIGN_TMP=$(mktemp -d)
+    OPENSSL_BIN="$(brew --prefix openssl@3)/bin/openssl"
+    "$OPENSSL_BIN" req -x509 -newkey rsa:2048 -nodes -days 3650 \
+      -subj "/CN=$SIGN_IDENTITY" \
+      -addext "basicConstraints=critical,CA:false" \
+      -addext "keyUsage=critical,digitalSignature" \
+      -addext "extendedKeyUsage=critical,codeSigning" \
+      -keyout "$SIGN_TMP/key.pem" -out "$SIGN_TMP/cert.pem" 2>/dev/null
+    "$OPENSSL_BIN" pkcs12 -export -inkey "$SIGN_TMP/key.pem" -in "$SIGN_TMP/cert.pem" \
+      -out "$SIGN_TMP/identity.p12" -passout pass:lumen \
+      -certpbe PBE-SHA1-3DES -keypbe PBE-SHA1-3DES -macalg sha1
+    security import "$SIGN_TMP/identity.p12" -k "$HOME/Library/Keychains/login.keychain-db" \
+      -P lumen -T /usr/bin/codesign >/dev/null
+    rm -rf "$SIGN_TMP"
+fi
+codesign --force --sign "$SIGN_IDENTITY" --identifier dev.lizardbyte.lumen "$INSTALL_DIR/sunshine"
+ok "Signed sunshine with '$SIGN_IDENTITY'"
+
 # Copy assets
 ASSETS_SRC=""
 if [ -d "$BUILD_DIR/sunshine/assets" ]; then
@@ -316,7 +340,9 @@ if nvram boot-args 2>/dev/null | grep -q "amfi_get_out_of_my_way=1"; then
 fi
 
 if [ "$AMFI_OFF" = true ] && [ -f "$ENTITLEMENTS" ] && [ -f "$BINARY" ]; then
-    codesign --sign - --entitlements "$ENTITLEMENTS" --force "$BINARY" 2>/dev/null
+    # Keep the stable identity from install.sh so Screen Recording / Accessibility grants survive.
+    codesign --sign "Lumen Local Signing" --identifier dev.lizardbyte.lumen \
+      --entitlements "$ENTITLEMENTS" --force "$BINARY" 2>/dev/null
     # Also sign vd_helper (virtual display helper) — no HID entitlement needed,
     # but ad-hoc signing is required for unsigned binaries when AMFI is disabled.
     VD_HELPER="$INSTALL_DIR/vd_helper"
